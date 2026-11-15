@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Bed Management | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Smart Bed Management</h1>
+    <p>Live bed board. It refreshes by itself every 15 seconds.</p>
+    <div id="errorBox"></div>
+    <div id="alertBox"></div>
+
+    <div class="stats-grid" id="summaryGrid"></div>
+    <div class="stats-grid" id="typeGrid"></div>
+
+    <div class="form-card">
+      <h2>✨ Smart Bed Finder</h2>
+      <div class="form-grid">
+        <select id="finderType">
+          <option value="">Any ward type</option>
+          <option>General Ward</option><option>Semi-Private</option><option>Private Room</option>
+          <option>ICU</option><option>Emergency</option>
+        </select>
+      </div>
+      <button type="button" id="findBtn">Find Best Bed</button>
+      <div id="finderResult"></div>
+    </div>
+
+    <div class="filters">
+      <select id="typeFilter">
+        <option value="">All ward types</option>
+        <option>General Ward</option><option>Semi-Private</option><option>Private Room</option>
+        <option>ICU</option><option>Emergency</option>
+      </select>
+      <select id="statusFilter">
+        <option value="">All bed statuses</option>
+        <option>Available</option><option>Occupied</option><option>Cleaning</option><option>Maintenance</option>
+      </select>
+      <span id="updated" style="color:var(--muted);font-size:0.8rem;"></span>
+    </div>
+
+    <div class="legend">
+      <span class="l-available">Available</span>
+      <span class="l-occupied">Occupied</span>
+      <span class="l-cleaning">Cleaning</span>
+      <span class="l-maintenance">Maintenance</span>
+    </div>
+
+    <div id="board"></div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let allBeds = [];
+    const canChange = user && ["admin", "receptionist"].includes(user.role);
+
+    if (user) {
+      renderNavbar("/beds.html");
+      refresh();
+      setInterval(refresh, 15000);
+    }
+
+    async function refresh() {
+      await Promise.all([loadSummary(), loadBeds()]);
+      document.getElementById("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    }
+
+    function card(icon, value, label) {
+      return `<div class="stat-card"><div class="icon-badge">${icon}</div>
+        <div><div class="value">${value}</div><div class="label">${label}</div></div></div>`;
+    }
+
+    async function loadSummary() {
+      const r = await apiFetch("/beds/summary");
+      if (!r || !r.ok) return;
+      const s = r.body, o = s.overall;
+
+      document.getElementById("alertBox").innerHTML = s.alerts
+        .map((a) => `<div class="alert ${a.level}">⚠️ ${esc(a.message)}</div>`).join("");
+
+      document.getElementById("summaryGrid").innerHTML =
+        card("🛏️", o.total, "Total Beds") +
+        card("✅", o.Available, "Available") +
+        card("🧍", o.Occupied, "Occupied") +
+        card("🧹", o.Cleaning, "Cleaning") +
+        card("🔧", o.Maintenance, "Maintenance") +
+        `<div class="stat-card" style="display:block;">
+           <div class="value">${s.occupancyRate}%</div><div class="label">Occupancy</div>
+           <div class="bar ${s.occupancyRate >= 80 ? "high" : ""}"><div style="width:${s.occupancyRate}%"></div></div>
+         </div>`;
+
+      document.getElementById("typeGrid").innerHTML = Object.keys(s.byType).sort().map((t) => {
+        const c = s.byType[t];
+        const pct = c.total ? Math.round((c.Occupied / c.total) * 100) : 0;
+        return `<div class="stat-card" style="display:block;">
+          <div class="value" style="font-size:1.1rem;">${esc(t)}</div>
+          <div class="label">${c.Available} free of ${c.total} beds</div>
+          <div class="bar ${pct >= 80 ? "high" : ""}"><div style="width:${pct}%"></div></div>
+        </div>`;
+      }).join("");
+    }
+
+    async function loadBeds() {
+      const r = await apiFetch("/beds");
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Failed to load beds");
+      allBeds = r.body;
+      draw();
+    }
+
+    function daysSince(date) {
+      return Math.max(1, Math.ceil((Date.now() - new Date(date).getTime()) / 86400000));
+    }
+
+    function bedTile(b) {
+      const st = b.status;
+      const actions = [];
+      if (canChange) {
+        if (st === "Cleaning" || st === "Maintenance") actions.push(`<span onclick="setStatus('${b._id}','Available')">Mark Ready</span>`);
+        if (st === "Available") {
+          actions.push(`<span onclick="setStatus('${b._id}','Cleaning')">Cleaning</span>`);
+          actions.push(`<span onclick="setStatus('${b._id}','Maintenance')">Repair</span>`);
+          actions.push(`<span onclick="location.href='/admissions.html?bed=${b._id}'">Admit</span>`);
+        }
+      }
+      if (st === "Occupied") actions.push(`<span onclick="location.href='/admissions.html'">Discharge</span>`);
+
+      const who = st === "Occupied" && b.patient
+        ? `<div class="bed-who">${esc(b.patient.name)}<br/>Day ${daysSince(b.occupiedSince)}</div>` : "";
+
+      return `<div class="bed ${st.toLowerCase()}">
+        <div class="bed-no">${esc(b.bedNumber)}</div>
+        <div class="bed-state">${st}</div>
+        ${who}
+        <div class="bed-actions">${actions.join("")}</div>
+      </div>`;
+    }
+
+    function draw() {
+      const type = document.getElementById("typeFilter").value;
+      const status = document.getElementById("statusFilter").value;
+
+      const list = allBeds.filter((b) =>
+        b.room && (!type || b.room.type === type) && (!status || b.status === status));
+
+      const groups = {};
+      list.forEach((b) => {
+        const id = b.room._id;
+        groups[id] = groups[id] || { room: b.room, beds: [] };
+        groups[id].beds.push(b);
+      });
+
+      const html = Object.values(groups)
+        .sort((a, b) => a.room.roomNumber.localeCompare(b.room.roomNumber, undefined, { numeric: true }))
+        .map((g) => {
+          g.beds.sort((a, b) => a.bedNumber.localeCompare(b.bedNumber, undefined, { numeric: true }));
+          return `<div class="room-card">
+            <div class="room-head">
+              <h3>Room ${esc(g.room.roomNumber)}</h3>
+              <span class="meta">${esc(g.room.type)} &middot; Floor ${esc(g.room.floor || "-")} &middot; ${money(g.room.pricePerDay)}/day</span>
+            </div>
+            <div class="bed-grid">${g.beds.map(bedTile).join("")}</div>
+          </div>`;
+        }).join("");
+
+      document.getElementById("board").innerHTML = html ||
+        `<div class="room-card empty-msg">No beds found. The admin can add rooms on the Rooms &amp; Beds page.</div>`;
+    }
+
+    document.getElementById("typeFilter").addEventListener("change", draw);
+    document.getElementById("statusFilter").addEventListener("change", draw);
+
+    async function setStatus(id, status) {
+      const r = await apiFetch(`/beds/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not change bed status");
+      showError("");
+      refresh();
+    }
+
+    document.getElementById("findBtn").addEventListener("click", async () => {
+      const type = document.getElementById("finderType").value;
+      const out = document.getElementById("finderResult");
+      const r = await apiFetch("/beds/smart-assign", { method: "POST", body: JSON.stringify({ type }) });
+      if (!r) return;
+      if (!r.ok) {
+        out.innerHTML = `<div class="alert danger" style="margin-top:1rem;">${esc(r.body.message || "No bed found")}</div>`;
+        return;
+      }
+      const b = r.body.bed;
+      const link = canChange
+        ? ` <a href="/admissions.html?bed=${b._id}" style="color:#14532d;font-weight:700;">Admit a patient here →</a>` : "";
+      out.innerHTML = `<div class="suggest-box"><b>Best bed: ${esc(b.bedNumber)}</b> (${esc(b.room.type)}, floor ${esc(b.room.floor || "-")}, ${money(b.room.pricePerDay)}/day)<br/>${esc(r.body.reason)}${link}</div>`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Patients | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Patients</h1>
+    <p>Register patients here. Use "Admission &amp; Discharge" to admit a patient to a bed.</p>
+    <div id="errorBox"></div>
+
+    <div class="form-card" id="formCard" style="display:none;">
+      <h2>Add Patient</h2>
+      <form id="patientForm">
+        <div class="form-grid">
+          <input type="text" name="name" placeholder="Full name" required />
+          <input type="number" name="age" placeholder="Age" min="0" required />
+          <select name="gender" required>
+            <option value="">Gender</option>
+            <option>Male</option><option>Female</option><option>Other</option>
+          </select>
+          <input type="text" name="phone" placeholder="Phone number" required />
+          <input type="text" name="bloodGroup" placeholder="Blood group (e.g. O+)" />
+          <input type="text" name="disease" placeholder="Condition / reason for visit" />
+          <input type="text" name="address" placeholder="Address" />
+        </div>
+        <button type="submit">Add Patient</button>
+      </form>
+    </div>
+
+    <div class="filters">
+      <input type="text" id="searchBox" placeholder="Search by name or phone" />
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Age</th><th>Gender</th><th>Phone</th><th>Blood Group</th><th>Condition</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="patientRows"></tbody>
+    </table>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let allPatients = [];
+
+    if (user) {
+      renderNavbar("/patients.html");
+      if (["admin", "receptionist"].includes(user.role)) document.getElementById("formCard").style.display = "block";
+      loadPatients();
+    }
+
+    async function loadPatients() {
+      const result = await apiFetch("/patients");
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to load patients");
+      allPatients = result.body;
+      draw();
+    }
+
+    function draw() {
+      const q = document.getElementById("searchBox").value.trim().toLowerCase();
+      const list = allPatients.filter((p) =>
+        !q || p.name.toLowerCase().includes(q) || String(p.phone).includes(q));
+
+      const rows = list.map((p) => `
+        <tr>
+          <td>${esc(p.name)}</td>
+          <td>${esc(p.age)}</td>
+          <td>${esc(p.gender)}</td>
+          <td>${esc(p.phone)}</td>
+          <td>${esc(p.bloodGroup) || "-"}</td>
+          <td>${esc(p.disease) || "-"}</td>
+          <td><span class="badge ${p.admitted ? "admitted" : "discharged"}">${p.admitted ? "Admitted" : "Not Admitted"}</span></td>
+          <td>${user.role === "admin" ? `<span class="delete-link" onclick="deletePatient('${p._id}')">Delete</span>` : ""}</td>
+        </tr>`).join("");
+
+      document.getElementById("patientRows").innerHTML =
+        rows || `<tr><td colspan="8" class="empty-msg">No patients found</td></tr>`;
+    }
+
+    document.getElementById("searchBox").addEventListener("input", draw);
+
+    document.getElementById("patientForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const result = await apiFetch("/patients", {
+        method: "POST",
+        body: JSON.stringify({
+          name: f.name.value, age: Number(f.age.value), gender: f.gender.value,
+          phone: f.phone.value, bloodGroup: f.bloodGroup.value, disease: f.disease.value,
+          address: f.address.value,
+        }),
+      });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to add patient");
+      f.reset();
+      showError("");
+      loadPatients();
+    });
+
+    async function deletePatient(id) {
+      if (!confirm("Delete this patient?")) return;
+      const result = await apiFetch(`/patients/${id}`, { method: "DELETE" });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Could not delete");
+      showError("");
+      loadPatients();
+    }
+  </script>
+</body>
+</html>

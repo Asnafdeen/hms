@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admission &amp; Discharge | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Patient Admission &amp; Discharge</h1>
+    <p>Admit a patient to a free bed. On discharge, the bed goes for cleaning and the room-charge bill is created automatically.</p>
+    <div id="errorBox"></div>
+
+    <div class="form-card" id="formCard" style="display:none;">
+      <h2>Admit Patient</h2>
+      <form id="admitForm">
+        <div class="form-grid">
+          <select name="patient" id="patientSelect" required><option value="">Select patient</option></select>
+          <select id="typeSelect">
+            <option value="">All ward types</option>
+            <option>General Ward</option><option>Semi-Private</option><option>Private Room</option>
+            <option>ICU</option><option>Emergency</option>
+          </select>
+          <select name="bed" id="bedSelect" required><option value="">Select free bed</option></select>
+          <select name="doctor" id="doctorSelect"><option value="">Doctor (optional)</option></select>
+          <input type="text" name="reason" placeholder="Reason for admission" />
+        </div>
+        <div class="btn-row" style="margin-top:1.1rem;">
+          <button type="button" class="btn secondary" id="smartBtn" style="margin-top:0;">✨ Smart Assign Bed</button>
+          <button type="submit" style="margin-top:0;">Admit Patient</button>
+        </div>
+        <div id="suggestBox"></div>
+        <p class="hint">Only patients who are not already admitted are listed. Add new patients on the Patients page first.</p>
+      </form>
+    </div>
+
+    <div class="filters">
+      <select id="statusFilter">
+        <option value="Admitted">Currently admitted</option>
+        <option value="Discharged">Discharged</option>
+        <option value="">All</option>
+      </select>
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Patient</th><th>Bed / Room</th><th>Doctor</th><th>Admitted On</th><th>Days</th><th>Room Charge</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="admRows"></tbody>
+    </table>
+    </div>
+    <p class="hint">Room charge = number of days × room price per day. Any started day counts as one day.</p>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let freeBeds = [];
+    let presetBed = new URLSearchParams(window.location.search).get("bed");
+
+    if (user) {
+      renderNavbar("/admissions.html");
+      if (["admin", "receptionist"].includes(user.role)) {
+        document.getElementById("formCard").style.display = "block";
+        loadFormData();
+      }
+      loadAdmissions();
+    }
+
+    async function loadFormData() {
+      const [patients, doctors] = await Promise.all([apiFetch("/patients"), apiFetch("/doctors")]);
+      if (patients && patients.ok) {
+        const notAdmitted = patients.body.filter((p) => !p.admitted);
+        document.getElementById("patientSelect").innerHTML = `<option value="">Select patient</option>` +
+          notAdmitted.map((p) => `<option value="${p._id}">${esc(p.name)} (${esc(p.phone)})</option>`).join("");
+      }
+      if (doctors && doctors.ok) {
+        document.getElementById("doctorSelect").innerHTML = `<option value="">Doctor (optional)</option>` +
+          doctors.body.map((d) => `<option value="${d._id}">${esc(d.name)} (${esc(d.specialization)})</option>`).join("");
+      }
+      await loadFreeBeds();
+      if (presetBed) {
+        const sel = document.getElementById("bedSelect");
+        if ([...sel.options].some((o) => o.value === presetBed)) sel.value = presetBed;
+        presetBed = null; // use the link only once
+      }
+    }
+
+    async function loadFreeBeds() {
+      const r = await apiFetch("/beds?status=Available");
+      if (!r || !r.ok) return;
+      freeBeds = r.body;
+      drawBedOptions();
+    }
+
+    function drawBedOptions(selectId) {
+      const type = document.getElementById("typeSelect").value;
+      const list = freeBeds.filter((b) => b.room && (!type || b.room.type === type));
+      const sel = document.getElementById("bedSelect");
+      sel.innerHTML = `<option value="">Select free bed (${list.length} free)</option>` +
+        list.map((b) => `<option value="${b._id}">${esc(b.bedNumber)} - ${esc(b.room.type)} (${money(b.room.pricePerDay)}/day)</option>`).join("");
+      if (selectId) sel.value = selectId;
+    }
+
+    document.getElementById("typeSelect").addEventListener("change", () => drawBedOptions());
+
+    document.getElementById("smartBtn").addEventListener("click", async () => {
+      const type = document.getElementById("typeSelect").value;
+      const box = document.getElementById("suggestBox");
+      const r = await apiFetch("/beds/smart-assign", { method: "POST", body: JSON.stringify({ type }) });
+      if (!r) return;
+      if (!r.ok) {
+        box.innerHTML = `<div class="alert danger" style="margin-top:1rem;">${esc(r.body.message || "No bed found")}</div>`;
+        return;
+      }
+      const b = r.body.bed;
+      drawBedOptions(b._id);
+      box.innerHTML = `<div class="suggest-box">✨ <b>Suggested: ${esc(b.bedNumber)}</b> (${esc(b.room.type)}, floor ${esc(b.room.floor || "-")}, ${money(b.room.pricePerDay)}/day)<br/>${esc(r.body.reason)}</div>`;
+    });
+
+    function daysSince(date) {
+      return Math.max(1, Math.ceil((Date.now() - new Date(date).getTime()) / 86400000));
+    }
+
+    async function loadAdmissions() {
+      const status = document.getElementById("statusFilter").value;
+      const r = await apiFetch("/admissions" + (status ? "?status=" + status : ""));
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Failed to load admissions");
+
+      const rows = r.body.map((a) => {
+        const admitted = a.status === "Admitted";
+        const days = admitted ? daysSince(a.admitDate) : a.daysStayed;
+        const price = a.room ? a.room.pricePerDay : 0;
+        const charge = admitted ? days * price : a.roomCharge;
+        return `
+        <tr>
+          <td>${esc(a.patient && a.patient.name) || "Unknown"}</td>
+          <td>${esc(a.bed && a.bed.bedNumber) || "-"}<br/><span style="color:var(--muted);font-size:0.78rem;">${esc(a.room && a.room.type) || ""}</span></td>
+          <td>${esc(a.doctor && a.doctor.name) || "-"}</td>
+          <td>${formatDate(a.admitDate)}${a.dischargeDate ? `<br/><span style="color:var(--muted);font-size:0.78rem;">Out: ${formatDate(a.dischargeDate)}</span>` : ""}</td>
+          <td>${days || "-"}</td>
+          <td>${money(charge)}${admitted ? ' <span style="color:var(--muted);font-size:0.75rem;">(so far)</span>' : ""}</td>
+          <td><span class="badge ${a.status.toLowerCase()}">${a.status}</span></td>
+          <td>${admitted ? `<span class="delete-link" onclick="discharge('${a._id}')">Discharge</span>` : ""}</td>
+        </tr>`;
+      }).join("");
+
+      document.getElementById("admRows").innerHTML =
+        rows || `<tr><td colspan="8" class="empty-msg">Nothing to show</td></tr>`;
+    }
+
+    document.getElementById("statusFilter").addEventListener("change", loadAdmissions);
+
+    document.getElementById("admitForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const r = await apiFetch("/admissions", {
+        method: "POST",
+        body: JSON.stringify({
+          patient: f.patient.value, bed: f.bed.value, doctor: f.doctor.value, reason: f.reason.value,
+        }),
+      });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not admit patient");
+      f.reset();
+      document.getElementById("suggestBox").innerHTML = "";
+      showSuccess("Patient admitted successfully.");
+      await loadFormData();
+      loadAdmissions();
+    });
+
+    async function discharge(id) {
+      const note = prompt("Discharge note (optional):", "");
+      if (note === null) return; // pressed Cancel
+      const r = await apiFetch(`/admissions/${id}/discharge`, { method: "PUT", body: JSON.stringify({ dischargeNote: note }) });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not discharge");
+      const bill = r.body.bill;
+      showSuccess(bill
+        ? `Patient discharged. Bill of ${money(bill.amount)} created (see Billing & Payment). The bed is now being cleaned.`
+        : "Patient discharged. The bed is now being cleaned.");
+      if (["admin", "receptionist"].includes(user.role)) await loadFormData();
+      loadAdmissions();
+    }
+  </script>
+</body>
+</html>

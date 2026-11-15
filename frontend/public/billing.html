@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Billing &amp; Payment | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Billing &amp; Payment</h1>
+    <p>Create bills and take payments. Room-charge bills are created automatically when a patient is discharged.</p>
+    <div id="errorBox"></div>
+
+    <div class="stats-grid" id="totals"></div>
+
+    <div class="form-card">
+      <h2>Create Bill</h2>
+      <form id="billForm">
+        <div class="form-grid">
+          <select name="patient" id="patientSelect" required><option value="">Select patient</option></select>
+          <input type="text" name="description" placeholder="Description (e.g. Consultation)" required />
+          <input type="number" name="amount" placeholder="Amount (₹)" min="1" required />
+        </div>
+        <button type="submit">Create Bill</button>
+      </form>
+    </div>
+
+    <div class="filters">
+      <select id="statusFilter">
+        <option value="">All bills</option>
+        <option>Unpaid</option><option>Paid</option>
+      </select>
+      <input type="text" id="searchBox" placeholder="Search patient" />
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Patient</th><th>Description</th><th>Amount</th><th>Status</th><th>Paid By</th><th>Action</th></tr>
+      </thead>
+      <tbody id="billRows"></tbody>
+    </table>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let allBills = [];
+
+    if (user) {
+      if (!["admin", "receptionist"].includes(user.role)) {
+        window.location.href = "/dashboard.html";
+      } else {
+        renderNavbar("/billing.html");
+        loadPatientsDropdown();
+        loadBills();
+      }
+    }
+
+    async function loadPatientsDropdown() {
+      const result = await apiFetch("/patients");
+      if (result && result.ok) {
+        document.getElementById("patientSelect").innerHTML = `<option value="">Select patient</option>` +
+          result.body.map((p) => `<option value="${p._id}">${esc(p.name)} (${esc(p.phone)})</option>`).join("");
+      }
+    }
+
+    async function loadBills() {
+      const result = await apiFetch("/billing");
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to load bills");
+      allBills = result.body;
+      draw();
+    }
+
+    function draw() {
+      const paid = allBills.filter((b) => b.status === "Paid").reduce((s, b) => s + b.amount, 0);
+      const unpaid = allBills.filter((b) => b.status === "Unpaid").reduce((s, b) => s + b.amount, 0);
+      document.getElementById("totals").innerHTML =
+        `<div class="stat-card"><div class="icon-badge">💰</div><div><div class="value">${money(paid)}</div><div class="label">Collected</div></div></div>
+         <div class="stat-card"><div class="icon-badge">⏳</div><div><div class="value">${money(unpaid)}</div><div class="label">Pending</div></div></div>`;
+
+      const status = document.getElementById("statusFilter").value;
+      const q = document.getElementById("searchBox").value.trim().toLowerCase();
+      const list = allBills.filter((b) =>
+        (!status || b.status === status) &&
+        (!q || (b.patient && b.patient.name.toLowerCase().includes(q))));
+
+      const rows = list.map((b) => {
+        let action = "";
+        if (b.status === "Unpaid") {
+          action = `<div class="pay-box">
+            <select id="m-${b._id}">
+              <option>Cash</option><option>Card</option><option>UPI</option><option>Insurance</option>
+            </select>
+            <button onclick="pay('${b._id}')">Pay</button>
+          </div>`;
+        }
+        if (user.role === "admin") {
+          action += ` <span class="delete-link" onclick="deleteBill('${b._id}')">Delete</span>`;
+        }
+        const paidInfo = b.status === "Paid" ? `${esc(b.paymentMethod)}<br/><span style="color:var(--muted);font-size:0.78rem;">${formatDate(b.paidAt)}</span>` : "-";
+        return `
+        <tr>
+          <td>${formatDate(b.createdAt)}</td>
+          <td>${esc(b.patient && b.patient.name) || "Unknown"}</td>
+          <td>${esc(b.description)}</td>
+          <td>${money(b.amount)}</td>
+          <td><span class="badge ${b.status.toLowerCase()}">${b.status}</span></td>
+          <td>${paidInfo}</td>
+          <td>${action}</td>
+        </tr>`;
+      }).join("");
+
+      document.getElementById("billRows").innerHTML =
+        rows || `<tr><td colspan="7" class="empty-msg">No bills found</td></tr>`;
+    }
+
+    document.getElementById("statusFilter").addEventListener("change", draw);
+    document.getElementById("searchBox").addEventListener("input", draw);
+
+    document.getElementById("billForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const result = await apiFetch("/billing", {
+        method: "POST",
+        body: JSON.stringify({ patient: f.patient.value, description: f.description.value, amount: Number(f.amount.value) }),
+      });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to create bill");
+      f.reset();
+      showError("");
+      loadBills();
+    });
+
+    async function pay(id) {
+      const method = document.getElementById("m-" + id).value;
+      const result = await apiFetch(`/billing/${id}/pay`, { method: "POST", body: JSON.stringify({ paymentMethod: method }) });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Payment failed");
+      showSuccess("Payment received by " + method + ".");
+      loadBills();
+    }
+
+    async function deleteBill(id) {
+      if (!confirm("Delete this bill?")) return;
+      const result = await apiFetch(`/billing/${id}`, { method: "DELETE" });
+      if (result && result.ok) loadBills();
+    }
+  </script>
+</body>
+</html>

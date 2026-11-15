@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rooms &amp; Beds | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Room &amp; Bed Management</h1>
+    <p>Set up wards, rooms, beds and the price per day. Room prices are used to make the bill when a patient is discharged.</p>
+    <div id="errorBox"></div>
+
+    <div class="form-card" id="formCard" style="display:none;">
+      <h2>Add Room</h2>
+      <form id="roomForm">
+        <div class="form-grid">
+          <input type="text" name="roomNumber" placeholder="Room number (e.g. G-103)" required />
+          <select name="type" required>
+            <option value="">Room type</option>
+            <option>General Ward</option><option>Semi-Private</option><option>Private Room</option>
+            <option>ICU</option><option>Emergency</option>
+          </select>
+          <input type="text" name="floor" placeholder="Floor (e.g. 2)" />
+          <input type="number" name="pricePerDay" placeholder="Price per day (₹)" min="0" required />
+          <input type="number" name="bedCount" placeholder="Number of beds" min="1" max="20" value="1" required />
+        </div>
+        <button type="submit">Add Room</button>
+      </form>
+    </div>
+
+    <div class="legend">
+      <span class="l-available">Available</span>
+      <span class="l-occupied">Occupied</span>
+      <span class="l-cleaning">Cleaning</span>
+      <span class="l-maintenance">Maintenance</span>
+    </div>
+
+    <div id="roomList"></div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    const isAdmin = user && user.role === "admin";
+
+    if (user) {
+      renderNavbar("/rooms.html");
+      if (isAdmin) document.getElementById("formCard").style.display = "block";
+      loadRooms();
+    }
+
+    async function loadRooms() {
+      const r = await apiFetch("/rooms");
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Failed to load rooms");
+
+      const html = r.body.map((room) => {
+        const free = room.beds.filter((b) => b.status === "Available").length;
+        const beds = room.beds.map((b) => `
+          <div class="bed ${b.status.toLowerCase()}">
+            <div class="bed-no">${esc(b.bedNumber)}</div>
+            <div class="bed-state">${b.status}</div>
+            ${b.status === "Occupied" && b.patient ? `<div class="bed-who">${esc(b.patient.name)}</div>` : ""}
+            ${isAdmin && b.status !== "Occupied" ? `<div class="bed-actions"><span onclick="deleteBed('${b._id}')">Remove</span></div>` : ""}
+          </div>`).join("");
+
+        return `<div class="room-card">
+          <div class="room-head">
+            <div>
+              <h3>Room ${esc(room.roomNumber)}</h3>
+              <span class="meta">${esc(room.type)} &middot; Floor ${esc(room.floor || "-")} &middot; ${money(room.pricePerDay)}/day &middot; ${free} of ${room.beds.length} beds free</span>
+            </div>
+            ${isAdmin ? `<div>
+              <span class="blue-link" onclick="addBed('${room._id}')">+ Add bed</span><span class="sep">|</span>
+              <span class="blue-link" onclick="editPrice('${room._id}', ${Number(room.pricePerDay)})">Change price</span><span class="sep">|</span>
+              <span class="delete-link" onclick="deleteRoom('${room._id}')">Delete room</span>
+            </div>` : ""}
+          </div>
+          <div class="bed-grid">${beds || '<span class="empty-msg">No beds in this room</span>'}</div>
+        </div>`;
+      }).join("");
+
+      document.getElementById("roomList").innerHTML =
+        html || `<div class="room-card empty-msg">No rooms yet. ${isAdmin ? "Add your first room above." : "The admin can add rooms."}</div>`;
+    }
+
+    document.getElementById("roomForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const r = await apiFetch("/rooms", {
+        method: "POST",
+        body: JSON.stringify({
+          roomNumber: f.roomNumber.value, type: f.type.value, floor: f.floor.value,
+          pricePerDay: Number(f.pricePerDay.value), bedCount: Number(f.bedCount.value),
+        }),
+      });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not add room");
+      f.reset();
+      f.bedCount.value = 1;
+      showError("");
+      loadRooms();
+    });
+
+    async function addBed(roomId) {
+      const r = await apiFetch(`/rooms/${roomId}/beds`, { method: "POST", body: "{}" });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not add bed");
+      showError("");
+      loadRooms();
+    }
+
+    async function editPrice(roomId, current) {
+      const value = prompt("New price per day (₹):", current);
+      if (value === null) return;
+      const price = Number(value);
+      if (isNaN(price) || price < 0 || value.trim() === "") return showError("Please enter a valid price.");
+      const r = await apiFetch(`/rooms/${roomId}`, { method: "PUT", body: JSON.stringify({ pricePerDay: price }) });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not update price");
+      showError("");
+      loadRooms();
+    }
+
+    async function deleteBed(id) {
+      if (!confirm("Remove this bed?")) return;
+      const r = await apiFetch(`/beds/${id}`, { method: "DELETE" });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not remove bed");
+      showError("");
+      loadRooms();
+    }
+
+    async function deleteRoom(id) {
+      if (!confirm("Delete this room and all its beds?")) return;
+      const r = await apiFetch(`/rooms/${id}`, { method: "DELETE" });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not delete room");
+      showError("");
+      loadRooms();
+    }
+  </script>
+</body>
+</html>

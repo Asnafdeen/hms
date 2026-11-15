@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reports | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Reports</h1>
+    <p>Hospital-wide summary, live from the database.</p>
+    <div id="errorBox"></div>
+
+    <div id="content" style="display:none;">
+      <h2 class="section-head">Patients &amp; Appointments</h2>
+      <div class="stats-grid" id="gridA"></div>
+
+      <h2 class="section-head">Beds</h2>
+      <div class="stats-grid" id="gridB"></div>
+
+      <h2 class="section-head">Money</h2>
+      <div class="stats-grid" id="gridC"></div>
+
+      <h2 class="section-head">Expenses by Category</h2>
+      <div class="table-card">
+        <table>
+          <thead><tr><th>Category</th><th>Amount</th></tr></thead>
+          <tbody id="catRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+
+    function card(icon, value, label) {
+      return `<div class="stat-card"><div class="icon-badge">${icon}</div>
+        <div><div class="value">${value}</div><div class="label">${label}</div></div></div>`;
+    }
+
+    if (user) {
+      renderNavbar("/reports.html");
+      if (user.role !== "admin") {
+        showError("Reports are only available to the admin.");
+      } else {
+        loadStats();
+      }
+    }
+
+    async function loadStats() {
+      const r = await apiFetch("/reports/summary");
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Failed to load report");
+      const s = r.body;
+      document.getElementById("content").style.display = "block";
+
+      document.getElementById("gridA").innerHTML =
+        card("🧍", s.totalPatients, "Total Patients") +
+        card("🩺", s.totalDoctors, "Total Doctors") +
+        card("📅", s.appointmentsToday, "Appointments Today") +
+        card("🗓️", s.totalAppointments, "Total Appointments") +
+        card("📋", s.currentlyAdmitted, "Currently Admitted") +
+        card("🚪", s.totalDischarged, "Total Discharged");
+
+      document.getElementById("gridB").innerHTML =
+        card("🛏️", s.totalBeds, "Total Beds") +
+        card("✅", s.availableBeds, "Available Beds") +
+        card("🧍", s.occupiedBeds, "Occupied Beds") +
+        card("📊", s.occupancyRate + "%", "Bed Occupancy");
+
+      document.getElementById("gridC").innerHTML =
+        card("💰", money(s.totalRevenue), "Revenue Collected") +
+        card("⏳", money(s.pendingAmount), "Pending Bills") +
+        card("🧾", money(s.totalExpenses), "Total Expenses") +
+        card("📈", money(s.netProfit), "Net Profit (Revenue - Expenses)");
+
+      const cats = Object.keys(s.expensesByCategory);
+      document.getElementById("catRows").innerHTML = cats.length
+        ? cats.map((c) => `<tr><td>${esc(c)}</td><td>${money(s.expensesByCategory[c])}</td></tr>`).join("")
+        : `<tr><td colspan="2" class="empty-msg">No expenses recorded yet</td></tr>`;
+    }
+  </script>
+</body>
+</html>

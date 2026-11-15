@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Appointments | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Appointment Management</h1>
+    <p>Book, reschedule, complete or cancel appointments.</p>
+    <div id="errorBox"></div>
+
+    <div class="form-card" id="formCard" style="display:none;">
+      <h2>Book Appointment</h2>
+      <form id="apptForm">
+        <div class="form-grid">
+          <select name="patient" id="patientSelect" required><option value="">Select patient</option></select>
+          <select name="doctor" id="doctorSelect" required><option value="">Select doctor</option></select>
+          <input type="date" name="date" id="dateInput" required />
+          <input type="time" name="time" required />
+          <input type="text" name="reason" placeholder="Reason for visit" />
+        </div>
+        <button type="submit">Book Appointment</button>
+      </form>
+    </div>
+
+    <div class="filters">
+      <select id="statusFilter">
+        <option value="">All statuses</option>
+        <option>Scheduled</option><option>Completed</option><option>Cancelled</option>
+      </select>
+      <input type="date" id="dateFilter" />
+      <button class="btn secondary" id="todayBtn" type="button">Today</button>
+      <button class="btn secondary" id="clearBtn" type="button">Clear filters</button>
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Time</th><th>Reason</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="apptRows"></tbody>
+    </table>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let canUpdateStatus = false;
+    let canManage = false;
+
+    if (user) {
+      renderNavbar("/appointments.html");
+      canUpdateStatus = ["admin", "receptionist", "doctor"].includes(user.role);
+      canManage = ["admin", "receptionist"].includes(user.role);
+      if (canManage) {
+        document.getElementById("formCard").style.display = "block";
+        document.getElementById("dateInput").min = todayStr();
+        loadDropdowns();
+      }
+      loadAppointments();
+    }
+
+    async function loadDropdowns() {
+      const patients = await apiFetch("/patients");
+      const doctors = await apiFetch("/doctors");
+      if (patients && patients.ok) {
+        document.getElementById("patientSelect").innerHTML = `<option value="">Select patient</option>` +
+          patients.body.map((p) => `<option value="${p._id}">${esc(p.name)} (${esc(p.phone)})</option>`).join("");
+      }
+      if (doctors && doctors.ok) {
+        document.getElementById("doctorSelect").innerHTML = `<option value="">Select doctor</option>` +
+          doctors.body.map((d) => `<option value="${d._id}">${esc(d.name)} (${esc(d.specialization)})</option>`).join("");
+      }
+    }
+
+    async function loadAppointments() {
+      const params = new URLSearchParams();
+      const status = document.getElementById("statusFilter").value;
+      const date = document.getElementById("dateFilter").value;
+      if (status) params.set("status", status);
+      if (date) params.set("date", date);
+
+      const result = await apiFetch("/appointments?" + params.toString());
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to load appointments");
+
+      const rows = result.body.map((a) => {
+        const actions = [];
+        if (canUpdateStatus && a.status === "Scheduled") {
+          actions.push(`<span class="ok-link" onclick="updateStatus('${a._id}', 'Completed')">Complete</span>`);
+          actions.push(`<span class="blue-link" onclick="reschedule('${a._id}', '${esc(a.date)}', '${esc(a.time)}')">Reschedule</span>`);
+          actions.push(`<span class="delete-link" onclick="updateStatus('${a._id}', 'Cancelled')">Cancel</span>`);
+        }
+        if (canManage) actions.push(`<span class="delete-link" onclick="removeAppt('${a._id}')">Delete</span>`);
+
+        return `
+        <tr>
+          <td>${esc(a.patient && a.patient.name) || "Unknown"}</td>
+          <td>${esc(a.doctor && a.doctor.name) || "Unknown"}</td>
+          <td>${esc(a.date)}</td>
+          <td>${esc(a.time)}</td>
+          <td>${esc(a.reason) || "-"}</td>
+          <td><span class="badge ${a.status.toLowerCase()}">${a.status}</span></td>
+          <td>${actions.join('<span class="sep">|</span>')}</td>
+        </tr>`;
+      }).join("");
+
+      document.getElementById("apptRows").innerHTML =
+        rows || `<tr><td colspan="7" class="empty-msg">No appointments found</td></tr>`;
+    }
+
+    document.getElementById("statusFilter").addEventListener("change", loadAppointments);
+    document.getElementById("dateFilter").addEventListener("change", loadAppointments);
+    document.getElementById("todayBtn").addEventListener("click", () => {
+      document.getElementById("dateFilter").value = todayStr();
+      loadAppointments();
+    });
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      document.getElementById("statusFilter").value = "";
+      document.getElementById("dateFilter").value = "";
+      loadAppointments();
+    });
+
+    document.getElementById("apptForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const result = await apiFetch("/appointments", {
+        method: "POST",
+        body: JSON.stringify({
+          patient: f.patient.value, doctor: f.doctor.value,
+          date: f.date.value, time: f.time.value, reason: f.reason.value,
+        }),
+      });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to book appointment");
+      f.reset();
+      showError("");
+      loadAppointments();
+    });
+
+    async function updateStatus(id, status) {
+      const result = await apiFetch(`/appointments/${id}`, { method: "PUT", body: JSON.stringify({ status }) });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Could not update");
+      showError("");
+      loadAppointments();
+    }
+
+    async function reschedule(id, oldDate, oldTime) {
+      const date = prompt("New date (YYYY-MM-DD):", oldDate);
+      if (!date) return;
+      const time = prompt("New time (HH:MM, 24-hour):", oldTime);
+      if (!time) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
+        return showError("Please use the format YYYY-MM-DD for date and HH:MM for time.");
+      }
+      const result = await apiFetch(`/appointments/${id}`, { method: "PUT", body: JSON.stringify({ date, time }) });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Could not reschedule");
+      showError("");
+      loadAppointments();
+    }
+
+    async function removeAppt(id) {
+      if (!confirm("Delete this appointment?")) return;
+      const result = await apiFetch(`/appointments/${id}`, { method: "DELETE" });
+      if (result && result.ok) loadAppointments();
+    }
+  </script>
+</body>
+</html>

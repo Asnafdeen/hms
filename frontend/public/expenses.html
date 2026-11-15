@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hospital Expenses | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Hospital Expenses</h1>
+    <p>Record what the hospital spends. Only the admin can see this page.</p>
+    <div id="errorBox"></div>
+
+    <div class="stats-grid" id="summaryGrid"></div>
+
+    <div class="form-card">
+      <h2>Add Expense</h2>
+      <form id="expForm">
+        <div class="form-grid">
+          <input type="text" name="title" placeholder="What was it for? (e.g. Oxygen cylinders)" required />
+          <select name="category" required>
+            <option>Salaries</option><option>Medicines</option><option>Equipment</option>
+            <option>Utilities</option><option>Maintenance</option><option>Supplies</option><option selected>Other</option>
+          </select>
+          <input type="number" name="amount" placeholder="Amount (₹)" min="1" required />
+          <input type="date" name="date" id="dateInput" required />
+          <input type="text" name="note" placeholder="Note (optional)" />
+        </div>
+        <button type="submit">Add Expense</button>
+      </form>
+    </div>
+
+    <div class="filters">
+      <input type="month" id="monthFilter" />
+      <button class="btn secondary" id="allBtn" type="button">All time</button>
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Title</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr>
+      </thead>
+      <tbody id="expRows"></tbody>
+    </table>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+
+    if (user) {
+      if (user.role !== "admin") {
+        window.location.href = "/dashboard.html";
+      } else {
+        renderNavbar("/expenses.html");
+        document.getElementById("dateInput").value = todayStr();
+        document.getElementById("monthFilter").value = todayStr().slice(0, 7);
+        load();
+      }
+    }
+
+    const ICONS = { Salaries: "👥", Medicines: "💊", Equipment: "🩻", Utilities: "💡", Maintenance: "🔧", Supplies: "📦", Other: "🧾" };
+
+    async function load() {
+      const month = document.getElementById("monthFilter").value;
+      const qs = month ? "?month=" + month : "";
+
+      const [list, sum] = await Promise.all([apiFetch("/expenses" + qs), apiFetch("/expenses/summary" + qs)]);
+      if (!list || !sum) return;
+      if (!list.ok) return showError(list.body.message || "Failed to load expenses");
+
+      const s = sum.body;
+      let cards = `<div class="stat-card"><div class="icon-badge">💸</div>
+        <div><div class="value">${money(s.total)}</div><div class="label">Total ${month ? "this month" : "all time"} (${s.count} items)</div></div></div>`;
+      Object.keys(s.byCategory).forEach((c) => {
+        cards += `<div class="stat-card"><div class="icon-badge">${ICONS[c] || "🧾"}</div>
+          <div><div class="value">${money(s.byCategory[c])}</div><div class="label">${esc(c)}</div></div></div>`;
+      });
+      document.getElementById("summaryGrid").innerHTML = cards;
+
+      const rows = list.body.map((e) => `
+        <tr>
+          <td>${esc(e.date)}</td>
+          <td>${esc(e.title)}</td>
+          <td>${esc(e.category)}</td>
+          <td>${money(e.amount)}</td>
+          <td>${esc(e.note) || "-"}</td>
+          <td><span class="delete-link" onclick="removeExp('${e._id}')">Delete</span></td>
+        </tr>`).join("");
+
+      document.getElementById("expRows").innerHTML =
+        rows || `<tr><td colspan="6" class="empty-msg">No expenses found</td></tr>`;
+    }
+
+    document.getElementById("monthFilter").addEventListener("change", load);
+    document.getElementById("allBtn").addEventListener("click", () => {
+      document.getElementById("monthFilter").value = "";
+      load();
+    });
+
+    document.getElementById("expForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const r = await apiFetch("/expenses", {
+        method: "POST",
+        body: JSON.stringify({
+          title: f.title.value, category: f.category.value, amount: Number(f.amount.value),
+          date: f.date.value, note: f.note.value,
+        }),
+      });
+      if (!r) return;
+      if (!r.ok) return showError(r.body.message || "Could not add expense");
+      f.reset();
+      f.date.value = todayStr();
+      f.category.value = "Other";
+      showError("");
+      load();
+    });
+
+    async function removeExp(id) {
+      if (!confirm("Delete this expense?")) return;
+      const r = await apiFetch(`/expenses/${id}`, { method: "DELETE" });
+      if (r && r.ok) load();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Doctors | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+  <div class="sidebar" id="navbar"></div>
+  <div class="main">
+  <div class="page">
+    <h1>Doctors</h1>
+    <p>Doctors added here also appear on the hospital website home page.</p>
+    <div id="errorBox"></div>
+
+    <div class="form-card" id="formCard" style="display:none;">
+      <h2>Add Doctor</h2>
+      <form id="doctorForm">
+        <div class="form-grid">
+          <input type="text" name="name" placeholder="Full name" required />
+          <input type="text" name="specialization" placeholder="Specialization (e.g. Cardiology)" required />
+          <input type="text" name="phone" placeholder="Phone number" />
+          <input type="email" name="email" placeholder="Email" />
+          <input type="text" name="availableDays" placeholder="Available days (e.g. Mon,Wed,Fri)" />
+          <input type="file" id="photoInput" accept="image/*" />
+        </div>
+        <img id="photoPreview" class="doc-thumb" style="display:none;margin-top:0.8rem;" alt="Preview" />
+        <br />
+        <button type="submit">Add Doctor</button>
+      </form>
+    </div>
+
+    <div class="table-card">
+    <table>
+      <thead>
+        <tr><th>Photo</th><th>Name</th><th>Specialization</th><th>Phone</th><th>Email</th><th>Available Days</th><th></th></tr>
+      </thead>
+      <tbody id="doctorRows"></tbody>
+    </table>
+    </div>
+  </div>
+  </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+    let canEdit = false;
+    let photoData = "";
+
+    if (user) {
+      renderNavbar("/doctors.html");
+      canEdit = user.role === "admin";
+      if (canEdit) document.getElementById("formCard").style.display = "block";
+      loadDoctors();
+    }
+
+    // Shrinks the chosen photo to 300px and turns it into text so it can be saved in MongoDB
+    document.getElementById("photoInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      photoData = "";
+      const preview = document.getElementById("photoPreview");
+      preview.style.display = "none";
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const size = 300;
+          const scale = Math.min(1, size / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          photoData = canvas.toDataURL("image/jpeg", 0.8);
+          preview.src = photoData;
+          preview.style.display = "inline-block";
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    async function loadDoctors() {
+      const result = await apiFetch("/doctors");
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to load doctors");
+
+      const rows = result.body.map((d) => `
+        <tr>
+          <td>${d.photo ? `<img class="doc-thumb" src="${d.photo}" alt="" />` : "🩺"}</td>
+          <td>${esc(d.name)}</td>
+          <td>${esc(d.specialization)}</td>
+          <td>${esc(d.phone) || "-"}</td>
+          <td>${esc(d.email) || "-"}</td>
+          <td>${esc((d.availableDays || []).join(", ")) || "-"}</td>
+          <td>${canEdit ? `<span class="delete-link" onclick="deleteDoctor('${d._id}')">Delete</span>` : ""}</td>
+        </tr>`).join("");
+
+      document.getElementById("doctorRows").innerHTML =
+        rows || `<tr><td colspan="7" class="empty-msg">No doctors yet</td></tr>`;
+    }
+
+    document.getElementById("doctorForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const result = await apiFetch("/doctors", {
+        method: "POST",
+        body: JSON.stringify({
+          name: f.name.value,
+          specialization: f.specialization.value,
+          phone: f.phone.value,
+          email: f.email.value,
+          availableDays: f.availableDays.value ? f.availableDays.value.split(",").map((d) => d.trim()) : [],
+          photo: photoData,
+        }),
+      });
+      if (!result) return;
+      if (!result.ok) return showError(result.body.message || "Failed to add doctor");
+      f.reset();
+      photoData = "";
+      document.getElementById("photoPreview").style.display = "none";
+      showError("");
+      loadDoctors();
+    });
+
+    async function deleteDoctor(id) {
+      if (!confirm("Delete this doctor?")) return;
+      const result = await apiFetch(`/doctors/${id}`, { method: "DELETE" });
+      if (result && result.ok) loadDoctors();
+    }
+  </script>
+</body>
+</html>

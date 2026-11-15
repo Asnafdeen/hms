@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard | Captain Medicare</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+    <div class="sidebar" id="navbar"></div>
+    <div class="main">
+      <div class="page">
+        <div class="hero">
+          <svg class="pulse-line" viewBox="0 0 800 70" preserveAspectRatio="none">
+            <polyline points="0,35 120,35 145,10 170,60 195,35 800,35" fill="none" stroke="white" stroke-width="2"/>
+          </svg>
+          <div class="eyebrow" id="dateLabel">Today</div>
+          <h1 id="welcome">Welcome</h1>
+          <div class="sub">Here's what's happening across the hospital right now.</div>
+        </div>
+
+        <div id="alertBox"></div>
+
+        <div class="quick-actions" id="quickActions"></div>
+
+        <h2 class="section-head">Bed Status</h2>
+        <div class="stats-grid" id="bedGrid"></div>
+
+        <div id="adminSection" style="display:none;">
+          <h2 class="section-head">Hospital Overview</h2>
+          <div class="stats-grid" id="statsGrid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script>
+    const user = requireAuth();
+
+    const QUICK_ACTIONS = [
+      { href: "/patients.html", icon: "🧍", label: "Patients", roles: ["admin", "receptionist", "doctor"] },
+      { href: "/appointments.html", icon: "📅", label: "Appointments", roles: ["admin", "receptionist", "doctor"] },
+      { href: "/admissions.html", icon: "📋", label: "Admission & Discharge", roles: ["admin", "receptionist", "doctor"] },
+      { href: "/beds.html", icon: "🛏️", label: "Smart Beds", roles: ["admin", "receptionist", "doctor"] },
+      { href: "/rooms.html", icon: "🚪", label: "Rooms & Beds", roles: ["admin", "receptionist", "doctor"] },
+      { href: "/billing.html", icon: "💳", label: "Billing & Payment", roles: ["admin", "receptionist"] },
+      { href: "/expenses.html", icon: "🧾", label: "Hospital Expenses", roles: ["admin"] },
+      { href: "/reports.html", icon: "📊", label: "Reports", roles: ["admin"] },
+    ];
+
+    function card(icon, value, label) {
+      return `<div class="stat-card"><div class="icon-badge">${icon}</div>
+        <div><div class="value">${value}</div><div class="label">${label}</div></div></div>`;
+    }
+
+    if (user) {
+      renderNavbar("/dashboard.html");
+      document.getElementById("welcome").textContent = `Welcome back, ${user.name}`;
+      document.getElementById("dateLabel").textContent = new Date().toLocaleDateString("en-IN", {
+        weekday: "long", year: "numeric", month: "long", day: "numeric"
+      });
+      document.getElementById("quickActions").innerHTML = QUICK_ACTIONS
+        .filter((a) => a.roles.includes(user.role))
+        .map((a) => `<a href="${a.href}"><span class="icon">${a.icon}</span>${a.label}</a>`)
+        .join("");
+
+      loadBeds();
+      if (user.role === "admin") {
+        document.getElementById("adminSection").style.display = "block";
+        loadStats();
+      }
+    }
+
+    async function loadBeds() {
+      const r = await apiFetch("/beds/summary");
+      if (!r || !r.ok) return;
+      const s = r.body;
+      const o = s.overall;
+
+      document.getElementById("alertBox").innerHTML = s.alerts
+        .map((a) => `<div class="alert ${a.level}">⚠️ ${esc(a.message)}</div>`).join("");
+
+      document.getElementById("bedGrid").innerHTML =
+        card("🛏️", o.total, "Total Beds") +
+        card("✅", o.Available, "Available Beds") +
+        card("🧍", o.Occupied, "Occupied Beds") +
+        card("🧹", o.Cleaning, "Being Cleaned") +
+        `<div class="stat-card" style="display:block;">
+           <div class="value">${s.occupancyRate}%</div><div class="label">Bed Occupancy</div>
+           <div class="bar ${s.occupancyRate >= 80 ? "high" : ""}"><div style="width:${s.occupancyRate}%"></div></div>
+         </div>`;
+    }
+
+    async function loadStats() {
+      const r = await apiFetch("/reports/summary");
+      if (!r || !r.ok) return;
+      const s = r.body;
+      document.getElementById("statsGrid").innerHTML =
+        card("🧍", s.totalPatients, "Total Patients") +
+        card("📋", s.currentlyAdmitted, "Currently Admitted") +
+        card("🩺", s.totalDoctors, "Total Doctors") +
+        card("📅", s.appointmentsToday, "Appointments Today") +
+        card("💰", money(s.totalRevenue), "Revenue Collected") +
+        card("⏳", money(s.pendingAmount), "Pending Bills") +
+        card("🧾", money(s.totalExpenses), "Total Expenses") +
+        card("📈", money(s.netProfit), "Net Profit");
+    }
+  </script>
+</body>
+</html>
